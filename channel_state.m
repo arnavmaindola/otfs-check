@@ -1,0 +1,79 @@
+function chan = channel_state(params)
+% CHANNEL_STATE  Draws ONE random realisation of the EVA multipath channel.
+% Both OTFS and OFDM links are driven from the same 'chan', so the
+% comparison is fair (same fades, same Dopplers).
+%
+% params: M, delta_f, fc, velocity_kmh, fading_model
+% chan  : lt (integer delay taps), h (P x 1 complex gains),
+%         nu (P x 1 Doppler shifts [Hz]), Ts, max_delay
+
+    M = params.M;
+    Ts = 1 / (M * params.delta_f);
+
+    % Standard 3GPP EVA profile (9 taps)
+    tau_sec = [0, 30, 150, 310, 370, 710, 1090, 1730, 2510] * 1e-9;
+    p_db    = [0.0, -1.5, -1.4, -3.6, -0.6, -9.1, -7.0, -12.0, -16.9];
+    p = 10.^(p_db / 10);
+    p = (p / sum(p)).';            % unit total average power
+    P = numel(p);
+
+    lt = round(tau_sec / Ts).';    % integer delay taps (sample spacing Ts)
+
+    % Jakes Doppler per path: nu = nu_max*cos(theta)
+    nu_max = (params.velocity_kmh / 3.6) * params.fc / 3e8;
+    nu = nu_max * cos(2*pi*rand(P, 1));
+
+    cn = @() randn(P, 1) + 1i*randn(P, 1);
+    ph = @() exp(1i*2*pi*rand(P, 1));
+
+    % Every model is normalised so that E|h_p|^2 = p_p
+    switch lower(params.fading_model)
+        case 'rayleigh'
+            h = sqrt(p/2) .* cn();
+
+        case 'rician'      % K = 6 dB on every tap
+            K = 10^(6/10);
+            h = sqrt(p) .* (sqrt(K/(K+1))*ph() + sqrt(1/(2*(K+1)))*cn());
+
+        case 'nakagami-m'  % m = 2
+            m = 2;
+            h = sqrt(p/m .* gamma_rnd(m, P)) .* ph();
+
+        case 'alpha-mu'    % alpha = 1.2, mu = 0.8 (severe fading)
+            alpha = 1.2; mu = 0.8;
+            r_hat = sqrt(p * mu^(2/alpha) * gamma(mu) / gamma(mu + 2/alpha));
+            h = r_hat .* (gamma_rnd(mu, P) / mu).^(1/alpha) .* ph();
+
+        case 'kappa-mu'    % kappa = 3, mu = 2
+            kappa = 3; mu = 2;
+            d  = kappa * p / (1 + kappa);
+            s2 = p / (2*mu*(1 + kappa));
+            Gc = sqrt(d / (2*mu)).' + sqrt(s2).' .* randn(2*mu, P);
+            h  = sqrt(sum(Gc.^2, 1)).' .* ph();
+
+        otherwise
+            error('Unknown fading model: %s', params.fading_model);
+    end
+
+    chan.lt = lt; chan.h = h; chan.nu = nu; chan.Ts = Ts;
+    chan.max_delay = max(lt);
+end
+
+function g = gamma_rnd(k, n)
+% Gamma(shape k, scale 1) samples, Marsaglia-Tsang (no toolbox needed).
+    g = zeros(n, 1);
+    for i = 1:n
+        kk = k + (k < 1);
+        d = kk - 1/3; c = 1/sqrt(9*d);
+        while true
+            x = randn(); v = (1 + c*x)^3;
+            if v > 0 && log(rand()) < 0.5*x^2 + d - d*v + d*log(v)
+                break;
+            end
+        end
+        g(i) = d * v;
+        if k < 1
+            g(i) = g(i) * rand()^(1/k);
+        end
+    end
+end
