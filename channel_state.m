@@ -21,19 +21,30 @@ function chan = channel_state(params)
 
     % Jakes Doppler per path: nu = nu_max*cos(theta)
     nu_max = (params.velocity_kmh / 3.6) * params.fc / 3e8;
-    nu = nu_max * cos(2*pi*rand(P, 1));
+    use_crn = isfield(params, 'crn');   % optional: externally supplied variates (see crn_variates)
+    if use_crn, nu = nu_max * cos(2*pi*params.crn.ang);
+    else,       nu = nu_max * cos(2*pi*rand(P, 1)); end
 
     cn = @() randn(P, 1) + 1i*randn(P, 1);
     ph = @() exp(1i*2*pi*rand(P, 1));
 
     % Every model is normalised so that E|h_p|^2 = p_p
+    if use_crn
+        h = crn_gains(params, p, P);
+    else
     switch lower(params.fading_model)
         case 'rayleigh'
             h = sqrt(p/2) .* cn();
 
-        case 'rician'      % K = 6 dB on every tap
+        case 'rician'      % K = 6 dB of total power in one LOS ray on tap 1
             K = 10^(6/10);
-            h = sqrt(p) .* (sqrt(K/(K+1))*ph() + sqrt(1/(2*(K+1)))*cn());
+            h = sqrt(p/(K+1)/2) .* cn();
+            h(1) = h(1) + sqrt(K/(K+1)) * exp(1i*2*pi*rand());
+
+        case 'rician-all-taps'   % K = 6 dB (params.K_db) on EVERY tap; = kappa-mu with mu = 1
+            K = 10^(6/10);
+            if isfield(params,'K_db'), K = 10^(params.K_db/10); end
+            h = sqrt(p/(K+1)/2) .* cn() + sqrt(p*K/(K+1)) .* ph();
 
         case 'nakagami-m'  % m = 2
             m = 2;
@@ -41,11 +52,15 @@ function chan = channel_state(params)
 
         case 'alpha-mu'    % alpha = 1.2, mu = 0.8 (severe fading)
             alpha = 1.2; mu = 0.8;
+            if isfield(params,'alpha'), alpha = params.alpha; end   % optional overrides
+            if isfield(params,'mu'),    mu    = params.mu;    end
             r_hat = sqrt(p * mu^(2/alpha) * gamma(mu) / gamma(mu + 2/alpha));
             h = r_hat .* (gamma_rnd(mu, P) / mu).^(1/alpha) .* ph();
 
         case 'kappa-mu'    % kappa = 3, mu = 2
             kappa = 3; mu = 2;
+            if isfield(params,'kappa'), kappa = params.kappa; end   % optional overrides
+            if isfield(params,'mu'),    mu    = params.mu;    end   % integer mu
             d  = kappa * p / (1 + kappa);
             s2 = p / (2*mu*(1 + kappa));
             Gc = sqrt(d / (2*mu)).' + sqrt(s2).' .* randn(2*mu, P);
@@ -54,9 +69,43 @@ function chan = channel_state(params)
         otherwise
             error('Unknown fading model: %s', params.fading_model);
     end
+    end
 
     chan.lt = lt; chan.h = h; chan.nu = nu; chan.Ts = Ts;
     chan.max_delay = max(lt);
+end
+
+function h = crn_gains(params, p, P)
+% Gains for every model built from the SAME externally drawn variates:
+%   crn.n (8 x P) N(0,1), crn.ph (P x 1) U(0,1), crn.u (P x 1) U(0,1).
+% Rayleigh/Rician use n(1:2,:); kappa-mu uses n(1:2*mu,:); alpha-mu uses u.
+    V = params.crn; ph = exp(1i*2*pi*V.ph);
+    cn = (V.n(1,:) + 1i*V.n(2,:)).';
+    switch lower(params.fading_model)
+        case 'rayleigh'
+            h = sqrt(p/2) .* cn;
+        case 'rician'
+            K = 10^(6/10); if isfield(params,'K_db'), K = 10^(params.K_db/10); end
+            h = sqrt(p/(K+1)/2) .* cn;
+            h(1) = h(1) + sqrt(K/(K+1)) * ph(1);
+        case 'rician-all-taps'
+            K = 10^(6/10); if isfield(params,'K_db'), K = 10^(params.K_db/10); end
+            h = sqrt(p/(K+1)/2) .* cn + sqrt(p*K/(K+1)) .* ph;
+        case 'nakagami-m'      % m = 2: Gamma(2) = sum of 4 squared N(0,1) / 2
+            m = 2;
+            h = sqrt(p/m .* (sum(V.n(1:4,:).^2, 1).' / 2)) .* ph;
+        case 'kappa-mu'
+            kappa = params.kappa; mu = params.mu;
+            d = kappa*p/(1+kappa); s2 = p/(2*mu*(1+kappa));
+            Gc = sqrt(d/(2*mu)).' + sqrt(s2).' .* V.n(1:2*mu, :);
+            h = sqrt(sum(Gc.^2, 1)).' .* ph;
+        case 'alpha-mu'
+            alpha = params.alpha; mu = params.mu;
+            r_hat = sqrt(p * mu^(2/alpha) * gamma(mu) / gamma(mu + 2/alpha));
+            h = r_hat .* (gammaincinv(V.u, mu) / mu).^(1/alpha) .* ph;
+        otherwise
+            error('Model %s not supported with crn', params.fading_model);
+    end
 end
 
 function g = gamma_rnd(k, n)

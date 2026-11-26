@@ -2,8 +2,10 @@
 % Each check prints PASS/FAIL. Covers: transforms, power/SNR scaling,
 % channel/matrix consistency, fading normalisation, MMSE correctness,
 % data-leakage, and the expected BER trends.
-clear; clc;
-params.M = 64; params.N = 8; params.delta_f = 15e3; params.fc = 4e9;
+clearvars -except N_GRID M_GRID; clc;
+if ~exist('N_GRID','var'), N_GRID = 8; end    % set N_GRID=16 before running to test that grid
+if ~exist('M_GRID','var'), M_GRID = 64; end   % set M_GRID=32 for the synopsis grid
+params.M = M_GRID; params.N = N_GRID; params.delta_f = 15e3; params.fc = 4e9;
 params.velocity_kmh = 120; params.snr_db = 10; params.fading_model = 'rayleigh';
 M = params.M; N = params.N; MN = M*N;
 nfail = 0;
